@@ -26,7 +26,7 @@ export interface SigmaPluginOptions {
 		pool: any,
 		userId: string,
 		pubkey: string,
-		register: boolean
+		register: boolean,
 	) => Promise<string | null>;
 
 	/**
@@ -119,7 +119,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 						// Get request body for signature verification
 						const bodyString = new URLSearchParams(
-							Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])
+							Object.entries(body).map(
+								([k, v]) => [k, String(v)] as [string, string],
+							),
 						).toString();
 
 						// Verify Bitcoin signature with body
@@ -153,7 +155,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						}
 
 						console.log(
-							`✅ [OAuth Token] Client authenticated via Bitcoin signature (clientId: ${clientId.substring(0, 20)}...)`
+							`✅ [OAuth Token] Client authenticated via Bitcoin signature (clientId: ${clientId.substring(0, 20)}...)`,
 						);
 
 						// Inject client_id into request body for Better Auth to process
@@ -204,7 +206,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						}
 
 						const bodyString = new URLSearchParams(
-							Object.entries(body).map(([k, v]) => [k, String(v)] as [string, string])
+							Object.entries(body).map(
+								([k, v]) => [k, String(v)] as [string, string],
+							),
 						).toString();
 
 						const verifyData = {
@@ -237,7 +241,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						}
 
 						console.log(
-							`✅ [OAuth Token Refresh] Client authenticated via Bitcoin signature (clientId: ${clientId.substring(0, 20)}...)`
+							`✅ [OAuth Token Refresh] Client authenticated via Bitcoin signature (clientId: ${clientId.substring(0, 20)}...)`,
 						);
 
 						// Inject client_id into request body for Better Auth to process
@@ -346,7 +350,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						// If duplicate key error, try to find the user again by pubkey
 						if (error.code === "23505") {
 							console.log(
-								"User already exists, attempting to find again by pubkey..."
+								"User already exists, attempting to find again by pubkey...",
 							);
 							const existingUsers =
 								await ctx.context.adapter.findMany<UserWithPubkey>({
@@ -376,7 +380,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 				if (options?.resolveBAPId && options?.getPool) {
 					const pool = options.getPool();
 					console.log(
-						`🔑 [SIGN-IN] Resolving pubkey to BAP ID: ${pubkey.substring(0, 30)}...`
+						`🔑 [SIGN-IN] Resolving pubkey to BAP ID: ${pubkey.substring(0, 30)}...`,
 					);
 
 					// Check cache if available
@@ -387,7 +391,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							cachedBapId = await options.cache.get<string>(cacheKey);
 							if (cachedBapId) {
 								console.log(
-									`✅ [SIGN-IN] Found cached BAP ID: ${cachedBapId.substring(0, 15)}...`
+									`✅ [SIGN-IN] Found cached BAP ID: ${cachedBapId.substring(0, 15)}...`,
 								);
 							}
 						} catch (error) {
@@ -397,12 +401,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 					// CRITICAL: Always call resolveBAPId - it has its own caching
 					// Bypassing with cachedBapId causes issues if registration is needed
-					const bapId = await options.resolveBAPId(
-						pool,
-						user.id,
-						pubkey,
-						true
-					);
+					const bapId = await options.resolveBAPId(pool, user.id, pubkey, true);
 
 					// Close pool if it has an end method
 					if (pool && typeof pool.end === "function") {
@@ -411,7 +410,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 					if (bapId) {
 						console.log(
-							`✅ BAP ID resolved and registered: ${bapId.substring(0, 20)}...`
+							`✅ BAP ID resolved and registered: ${bapId.substring(0, 20)}...`,
 						);
 
 						// Re-fetch user to get updated profile data
@@ -426,7 +425,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						}
 					} else {
 						console.warn(
-							"⚠️ BAP ID resolution failed - user may not have on-chain identity yet"
+							"⚠️ BAP ID resolution failed - user may not have on-chain identity yet",
 						);
 					}
 				}
@@ -434,7 +433,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 				// Create session - matches SIWE pattern exactly
 				const session = await ctx.context.internalAdapter.createSession(
 					user.id,
-					ctx
+					ctx,
 				);
 
 				if (!session) {
@@ -454,7 +453,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						name: user.name,
 					},
 				});
-		}
+			},
 		),
 	},
 });

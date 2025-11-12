@@ -34,3 +34,6 @@ coverage/
 .cache/
 temp/
 tmp/
+
+# Claude settings
+.claude/
