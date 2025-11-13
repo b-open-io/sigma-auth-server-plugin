@@ -147,20 +147,27 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					}
 
 					try {
-						const code = body.code as string;
 						const pool = options.getPool();
 
-						// Get consent_code from Better Auth's KV storage
-						// Better Auth stores authorization state at key: oauth:code:{code}
-						const authStateKey = `oauth:code:${code}`;
-						const authState = await options.cache.get<{
-							consentCode?: string;
-							userId?: string;
-						}>(authStateKey);
+						// Get the access token from response to find the related consent
+						const accessToken = (responseBody as { access_token: string })
+							.access_token;
 
-						if (!authState?.consentCode) {
+						// Query the access token record to get userId and clientId
+						console.log(
+							`🔵 [OAuth Token Hook] Querying for access token: ${accessToken.substring(0, 20)}...`,
+						);
+						const tokenResult = await pool.query<{
+							userId: string;
+							clientId: string;
+						}>(
+							'SELECT "userId", "clientId" FROM "oauthAccessToken" WHERE "accessToken" = $1 LIMIT 1',
+							[accessToken],
+						);
+
+						if (tokenResult.rows.length === 0) {
 							console.warn(
-								"⚠️ [OAuth Token] No consent code found for authorization code",
+								"⚠️ [OAuth Token Hook] No access token found in database",
 							);
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
@@ -168,25 +175,37 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
-						const consentCode = authState.consentCode;
-						const userId = authState.userId;
-
-						// Retrieve selected BAP ID from cache/KV
-						const selectedBapId = await options.cache.get<string>(
-							`consent:${consentCode}:bap_id`,
+						const { userId, clientId } = tokenResult.rows[0];
+						console.log(
+							`🔵 [OAuth Token Hook] Found userId: ${userId.substring(0, 15)}..., clientId: ${clientId.substring(0, 15)}...`,
 						);
 
-						if (!selectedBapId) {
-							console.warn("⚠️ [OAuth Token] No BAP ID selection found in KV");
+						// Query the most recent consent record for this user/client to get selectedBapId
+						console.log(
+							`🔵 [OAuth Token Hook] Querying consent record for selectedBapId`,
+						);
+						const consentResult = await pool.query<{ selectedBapId: string }>(
+							'SELECT "selectedBapId" FROM "oauthConsent" WHERE "userId" = $1 AND "clientId" = $2 ORDER BY "createdAt" DESC LIMIT 1',
+							[userId, clientId],
+						);
+
+						if (
+							consentResult.rows.length === 0 ||
+							!consentResult.rows[0].selectedBapId
+						) {
+							console.warn(
+								`⚠️ [OAuth Token Hook] No selectedBapId found in consent record for userId: ${userId.substring(0, 15)}..., clientId: ${clientId.substring(0, 15)}...`,
+							);
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
 							}
 							return;
 						}
 
-						// Get the access token from response
-						const accessToken = (responseBody as { access_token: string })
-							.access_token;
+						const selectedBapId = consentResult.rows[0].selectedBapId;
+						console.log(
+							`🔵 [OAuth Token Hook] Found selectedBapId: ${selectedBapId.substring(0, 15)}...`,
+						);
 
 						// Update the oauthAccessToken record with the selected BAP ID
 						await ctx.context.adapter.update({
@@ -198,17 +217,8 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						});
 
 						console.log(
-							`✅ [OAuth Token] Stored BAP ID in access token: user=${userId ? `${userId.substring(0, 15)}...` : "unknown"} bap=${selectedBapId.substring(0, 15)}...`,
+							`✅ [OAuth Token Hook] Stored BAP ID in access token: user=${userId.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}...`,
 						);
-
-						// Clean up KV entry if delete method is available
-						if (options.cache.delete) {
-							try {
-								await options.cache.delete(`consent:${consentCode}:bap_id`);
-							} catch (e) {
-								console.warn("⚠️ Could not delete consent KV entry:", e);
-							}
-						}
 
 						if (pool && typeof pool.end === "function") {
 							await pool.end();
