@@ -1,7 +1,11 @@
 import { PublicKey } from "@bsv/sdk";
 import type { Pool } from "@neondatabase/serverless";
 import type { BetterAuthPlugin, User } from "better-auth";
-import { APIError, createAuthEndpoint } from "better-auth/api";
+import {
+	APIError,
+	createAuthEndpoint,
+	sessionMiddleware,
+} from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
 import { createAuthMiddleware } from "better-auth/plugins";
 import { parseAuthToken, verifyAuthToken } from "bitcoin-auth";
@@ -625,22 +629,13 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					consentCode: z.string(),
 					bapId: z.string(),
 				}),
-				requireHeaders: true,
+				use: [sessionMiddleware],
 			},
 			async (ctx) => {
 				console.log("🔵 [Store Consent BAP ID] Endpoint called");
 
-				// Verify user is authenticated
+				// Session is guaranteed to exist due to sessionMiddleware
 				const session = ctx.context.session;
-				if (!session?.user?.id) {
-					console.warn(
-						"⚠️ [Store Consent BAP ID] No authenticated session found",
-					);
-					throw new APIError("UNAUTHORIZED", {
-						message: "Unauthorized - please sign in first",
-					});
-				}
-
 				console.log(
 					`🔵 [Store Consent BAP ID] User authenticated: ${session.user.id.substring(0, 15)}...`,
 				);
