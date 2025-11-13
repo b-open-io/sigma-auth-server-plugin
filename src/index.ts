@@ -278,8 +278,13 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 			{
 				matcher: (ctx) => ctx.path === "/oauth2/consent",
 				handler: createAuthMiddleware(async (ctx) => {
+					console.log("🔵 [OAuth Consent Hook] Consent hook triggered");
+
 					// Only proceed if we have the necessary options
 					if (!(options?.getPool && options?.cache)) {
+						console.warn(
+							"⚠️ [OAuth Consent Hook] Missing getPool or cache options",
+						);
 						return;
 					}
 
@@ -287,8 +292,15 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					const consentCode = body.consent_code as string;
 					const accept = body.accept as boolean;
 
+					console.log(
+						`🔵 [OAuth Consent Hook] Body: accept=${accept}, consentCode=${consentCode ? consentCode.substring(0, 20) + "..." : "undefined"}`,
+					);
+
 					// Only store selectedBapId if consent was accepted
 					if (!accept || !consentCode) {
+						console.warn(
+							`⚠️ [OAuth Consent Hook] Skipping - accept=${accept}, consentCode=${!!consentCode}`,
+						);
 						return;
 					}
 
@@ -296,12 +308,21 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						const pool = options.getPool();
 
 						// Retrieve selected BAP ID from cache/KV
+						console.log(
+							`🔵 [OAuth Consent Hook] Retrieving BAP ID from KV: consent:${consentCode}:bap_id`,
+						);
 						const selectedBapId = await options.cache.get<string>(
 							`consent:${consentCode}:bap_id`,
 						);
 
+						console.log(
+							`🔵 [OAuth Consent Hook] Retrieved BAP ID: ${selectedBapId || "null"}`,
+						);
+
 						if (!selectedBapId) {
-							console.warn("⚠️ [OAuth Consent] No BAP ID selection found in KV");
+							console.warn(
+								`⚠️ [OAuth Consent Hook] No BAP ID selection found in KV for consent code: ${consentCode}`,
+							);
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
 							}
@@ -335,13 +356,20 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 						// Get the authorization state to find clientId
 						const authStateKey = `oauth:consent:${consentCode}`;
+						console.log(
+							`🔵 [OAuth Consent Hook] Looking for auth state in KV: ${authStateKey}`,
+						);
 						const authState = await options.cache.get<{
 							clientId?: string;
 						}>(authStateKey);
 
+						console.log(
+							`🔵 [OAuth Consent Hook] Auth state retrieved: ${JSON.stringify(authState)}`,
+						);
+
 						if (!authState?.clientId) {
 							console.warn(
-								"⚠️ [OAuth Consent] No clientId found in consent state",
+								`⚠️ [OAuth Consent Hook] No clientId found in consent state for key: ${authStateKey}`,
 							);
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
@@ -349,14 +377,22 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
+						console.log(
+							`🔵 [OAuth Consent Hook] Updating consent record: userId=${session.user.id.substring(0, 15)}..., clientId=${authState.clientId.substring(0, 15)}..., bapId=${selectedBapId.substring(0, 15)}...`,
+						);
+
 						// Update the consent record with selectedBapId
-						await pool.query(
+						const result = await pool.query(
 							'UPDATE "oauthConsent" SET "selectedBapId" = $1 WHERE "userId" = $2 AND "clientId" = $3',
 							[selectedBapId, session.user.id, authState.clientId],
 						);
 
 						console.log(
-							`✅ [OAuth Consent] Stored BAP ID in consent: user=${session.user.id.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}... client=${authState.clientId.substring(0, 15)}...`,
+							`🔵 [OAuth Consent Hook] UPDATE query result: rowCount=${result.rowCount}`,
+						);
+
+						console.log(
+							`✅ [OAuth Consent Hook] Stored BAP ID in consent: user=${session.user.id.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}... client=${authState.clientId.substring(0, 15)}...`,
 						);
 
 						if (pool && typeof pool.end === "function") {
