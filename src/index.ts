@@ -1,11 +1,8 @@
 import { PublicKey } from "@bsv/sdk";
 import type { BetterAuthPlugin, User } from "better-auth";
-import {
-	APIError,
-	createAuthEndpoint,
-	createAuthMiddleware,
-} from "better-auth/api";
+import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
+import { createAuthMiddleware } from "better-auth/plugins";
 import { parseAuthToken, verifyAuthToken } from "bitcoin-auth";
 import { z } from "zod";
 
@@ -87,6 +84,14 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					: {}),
 			},
 		},
+		oauthAccessToken: {
+			fields: {
+				selectedBapId: {
+					type: "string",
+					required: false,
+				},
+			},
+		},
 	},
 
 	hooks: {
@@ -94,11 +99,18 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 			{
 				matcher: (ctx) => ctx.path === "/oauth2/token",
 				handler: createAuthMiddleware(async (ctx) => {
+					console.log(
+						"🔵 [Sigma Plugin] AFTER hook triggered for /oauth2/token",
+					);
 					const body = ctx.body as Record<string, unknown>;
 					const grantType = body.grant_type as string;
+					console.log(`🔵 [Sigma Plugin] Grant type: ${grantType}`);
 
 					// Only handle authorization_code grant (not refresh_token)
 					if (grantType !== "authorization_code") {
+						console.log(
+							"🔵 [Sigma Plugin] Skipping - not authorization_code grant",
+						);
 						return;
 					}
 
@@ -119,18 +131,19 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 					try {
 						const code = body.code as string;
-						const clientId = body.client_id as string;
 						const pool = options.getPool();
 
-						// Get the consent_code from the authorization record
-						const authResult = await pool.query(
-							"SELECT consent_code, user_id FROM oauth_authorization WHERE code = $1 LIMIT 1",
-							[code],
-						);
+						// Get consent_code from Better Auth's KV storage
+						// Better Auth stores authorization state at key: oauth:code:{code}
+						const authStateKey = `oauth:code:${code}`;
+						const authState = await options.cache.get<{
+							consentCode?: string;
+							userId?: string;
+						}>(authStateKey);
 
-						if (authResult.rows.length === 0) {
+						if (!authState?.consentCode) {
 							console.warn(
-								"⚠️ [OAuth Token] No authorization record found for code",
+								"⚠️ [OAuth Token] No consent code found for authorization code",
 							);
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
@@ -138,8 +151,8 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
-						const consentCode = authResult.rows[0].consent_code;
-						const userId = authResult.rows[0].user_id;
+						const consentCode = authState.consentCode;
+						const userId = authState.userId;
 
 						// Retrieve selected BAP ID from cache/KV
 						const selectedBapId = await options.cache.get<string>(
@@ -154,45 +167,30 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
-						// Get OAuth client's owner_bap_id
-						const clients = await ctx.context.adapter.findMany({
-							model: "oauthApplication",
-							where: [{ field: "clientId", value: clientId }],
+						// Get the access token from response
+						const accessToken = (responseBody as { access_token: string })
+							.access_token;
+
+						// Update the oauthAccessToken record with the selected BAP ID
+						await ctx.context.adapter.update({
+							model: "oauthAccessToken",
+							where: [{ field: "accessToken", value: accessToken }],
+							update: {
+								selectedBapId,
+							},
 						});
 
-						if (clients.length === 0) {
-							console.warn("⚠️ [OAuth Token] OAuth client not found");
-							if (pool && typeof pool.end === "function") {
-								await pool.end();
-							}
-							return;
-						}
-
-						const client = clients[0] as { metadata?: { owner_bap_id?: string } };
-						const oauthClientBapId = client.metadata?.owner_bap_id || clientId;
-
-						// Store the selected BAP ID in oauth_client_identities
-						await pool.query(
-							`INSERT INTO oauth_client_identities (user_id, oauth_client_id, bap_id, updated_at)
-							 VALUES ($1, $2, $3, NOW())
-							 ON CONFLICT (user_id, oauth_client_id)
-							 DO UPDATE SET bap_id = $3, updated_at = NOW()`,
-							[userId, oauthClientBapId, selectedBapId],
-						);
-
 						console.log(
-							`✅ [OAuth Token] Stored identity selection: user=${userId.substring(0, 15)}... client=${oauthClientBapId.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}...`,
+							`✅ [OAuth Token] Stored BAP ID in access token: user=${userId ? `${userId.substring(0, 15)}...` : "unknown"} bap=${selectedBapId.substring(0, 15)}...`,
 						);
 
-						// Clean up KV entry - use cache.delete if available, otherwise try direct method
-						try {
-							// @ts-ignore - cache might have a delete method
-							if (typeof options.cache.delete === "function") {
-								// @ts-ignore
+						// Clean up KV entry if delete method is available
+						if (options.cache.delete) {
+							try {
 								await options.cache.delete(`consent:${consentCode}:bap_id`);
+							} catch (e) {
+								console.warn("⚠️ Could not delete consent KV entry:", e);
 							}
-						} catch (e) {
-							console.warn("⚠️ Could not delete consent KV entry:", e);
 						}
 
 						if (pool && typeof pool.end === "function") {
@@ -206,16 +204,93 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					}
 				}),
 			},
+			{
+				matcher: (ctx) => ctx.path === "/oauth2/userinfo",
+				handler: createAuthMiddleware(async (ctx) => {
+					// Only proceed if we have getPool option
+					if (!options?.getPool) {
+						return;
+					}
+
+					// Get the access token from Authorization header
+					const authHeader = ctx.headers?.get?.("authorization");
+					if (!authHeader || !authHeader.startsWith("Bearer ")) {
+						return;
+					}
+
+					const accessToken = authHeader.substring(7);
+
+					// Look up the access token record to get selectedBapId
+					const pool = options.getPool();
+					try {
+						const result = await pool.query(
+							'SELECT "selectedBapId", "userId" FROM "oauthAccessToken" WHERE "accessToken" = $1 LIMIT 1',
+							[accessToken],
+						);
+
+						if (result.rows.length === 0 || !result.rows[0].selectedBapId) {
+							return; // No selected BAP ID, use primary (default behavior)
+						}
+
+						const selectedBapId = result.rows[0].selectedBapId;
+
+						// Get BAP ID details from user_bap_ids table
+						const bapResult = await pool.query(
+							"SELECT bap_id, name FROM user_bap_ids WHERE bap_id = $1 LIMIT 1",
+							[selectedBapId],
+						);
+
+						if (bapResult.rows.length === 0) {
+							return; // Selected BAP ID not found, use primary
+						}
+
+						// Modify the response to use selected BAP ID instead of primary
+						const responseBody = ctx.context.returned;
+						if (responseBody && typeof responseBody === "object") {
+							console.log(
+								`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}...`,
+							);
+
+							return {
+								context: {
+									...ctx,
+									returned: {
+										...responseBody,
+										bap_id: bapResult.rows[0].bap_id,
+										bap_name: bapResult.rows[0].name,
+									},
+								},
+							};
+						}
+					} catch (error) {
+						console.error(
+							"❌ [OAuth Userinfo] Error retrieving selected BAP ID:",
+							error,
+						);
+					} finally {
+						if (pool && typeof pool.end === "function") {
+							await pool.end();
+						}
+					}
+				}),
+			},
 		],
 		before: [
 			{
 				matcher: (ctx) => ctx.path === "/oauth2/token",
 				handler: createAuthMiddleware(async (ctx) => {
+					console.log(
+						"🟢 [Sigma Plugin] BEFORE hook triggered for /oauth2/token",
+					);
 					const body = ctx.body as Record<string, unknown>;
 					const grantType = body.grant_type as string;
+					console.log(`🟢 [Sigma Plugin] Grant type: ${grantType}`);
 
 					// Handle authorization_code grant type (exchange code for token)
 					if (grantType === "authorization_code") {
+						console.log(
+							"🟢 [Sigma Plugin] Processing authorization_code grant",
+						);
 						// Validate client authentication via Bitcoin signature
 						const headers = new Headers(ctx.headers || {});
 						const authToken = headers.get("x-auth-token");
@@ -404,7 +479,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 				// Parse the auth token
 				const parsed = parseAuthToken(authToken);
-				if (!(parsed && parsed.pubkey)) {
+				if (!parsed?.pubkey) {
 					throw new APIError("BAD_REQUEST", {
 						message: "Invalid auth token format",
 					});
