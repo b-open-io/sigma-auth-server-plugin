@@ -278,15 +278,11 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 								`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}...`,
 							);
 
+							// Return the modified userinfo response directly
 							return {
-								context: {
-									...ctx,
-									returned: {
-										...responseBody,
-										bap_id: bapResult.rows[0].bap_id,
-										bap_name: bapResult.rows[0].name,
-									},
-								},
+								...responseBody,
+								bap_id: bapResult.rows[0].bap_id,
+								bap_name: bapResult.rows[0].name,
 							};
 						}
 					} catch (error) {
