@@ -93,6 +93,22 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 				},
 			},
 		},
+		oauthApplication: {
+			fields: {
+				owner_bap_id: {
+					type: "string",
+					required: true,
+				},
+			},
+		},
+		oauthConsent: {
+			fields: {
+				selectedBapId: {
+					type: "string",
+					required: false,
+				},
+			},
+		},
 	},
 
 	hooks: {
@@ -319,22 +335,21 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
-						// Get the authorization state from Better Auth's KV storage to find clientId
-						const authStateKey = `oauth:consent:${consentCode}`;
-						console.log(
-							`🔵 [OAuth Consent Hook] Looking for auth state in KV: ${authStateKey}`,
-						);
-						const authState = await options.cache.get<{
-							clientId?: string;
-						}>(authStateKey);
+						// Wait a bit for Better Auth to create the consent record
+						await new Promise((resolve) => setTimeout(resolve, 100));
 
+						// Query the database to get the clientId from the consent record that was just created
 						console.log(
-							`🔵 [OAuth Consent Hook] Auth state retrieved: ${JSON.stringify(authState)}`,
+							`🔵 [OAuth Consent Hook] Querying database for clientId using userId: ${session.user.id.substring(0, 15)}...`,
+						);
+						const consentResult = await pool.query<{ clientId: string }>(
+							'SELECT "clientId" FROM "oauthConsent" WHERE "userId" = $1 ORDER BY "createdAt" DESC LIMIT 1',
+							[session.user.id],
 						);
 
-						if (!authState?.clientId) {
+						if (consentResult.rows.length === 0) {
 							console.warn(
-								`⚠️ [OAuth Consent Hook] No clientId found in consent state for key: ${authStateKey}`,
+								`⚠️ [OAuth Consent Hook] No consent record found for userId: ${session.user.id.substring(0, 15)}...`,
 							);
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
@@ -342,7 +357,10 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
-						const clientId = authState.clientId;
+						const clientId = consentResult.rows[0].clientId;
+						console.log(
+							`🔵 [OAuth Consent Hook] Found clientId from database: ${clientId.substring(0, 15)}...`,
+						);
 
 						// Retrieve selected BAP ID from cache/KV
 						console.log(
@@ -366,16 +384,13 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							return;
 						}
 
-						// Wait a bit for Better Auth to create the consent record
-						await new Promise((resolve) => setTimeout(resolve, 100));
-
 						console.log(
 							`🔵 [OAuth Consent Hook] Updating consent record: userId=${session.user.id.substring(0, 15)}..., clientId=${clientId.substring(0, 15)}..., bapId=${selectedBapId.substring(0, 15)}...`,
 						);
 
 						// Update the consent record with selectedBapId
 						const result = await pool.query(
-							'UPDATE "oauthConsent" SET "selectedBapId" = $1 WHERE "userId" = $2 AND "clientId" = $3 ORDER BY "createdAt" DESC LIMIT 1',
+							`UPDATE "oauthConsent" SET "selectedBapId" = $1 WHERE id = (SELECT id FROM "oauthConsent" WHERE "userId" = $2 AND "clientId" = $3 ORDER BY "createdAt" DESC LIMIT 1)`,
 							[selectedBapId, session.user.id, clientId],
 						);
 
