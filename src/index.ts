@@ -37,11 +37,12 @@ export interface SigmaPluginOptions {
 
 	/**
 	 * Optional cache implementation for BAP ID caching
-	 * Should provide get/set methods for key-value storage
+	 * Should provide get/set/delete methods for key-value storage
 	 */
 	cache?: {
 		get: <T = any>(key: string) => Promise<T | null>;
 		set: (key: string, value: any) => Promise<void>;
+		delete?: (key: string) => Promise<void>;
 	};
 
 	/**
@@ -89,6 +90,123 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 	},
 
 	hooks: {
+		after: [
+			{
+				matcher: (ctx) => ctx.path === "/oauth2/token",
+				handler: createAuthMiddleware(async (ctx) => {
+					const body = ctx.body as Record<string, unknown>;
+					const grantType = body.grant_type as string;
+
+					// Only handle authorization_code grant (not refresh_token)
+					if (grantType !== "authorization_code") {
+						return;
+					}
+
+					// Check if token exchange was successful
+					const responseBody = ctx.context.returned;
+					if (
+						!responseBody ||
+						typeof responseBody !== "object" ||
+						!("access_token" in responseBody)
+					) {
+						return; // Token exchange failed, skip BAP ID storage
+					}
+
+					// Only proceed if we have the necessary options
+					if (!(options?.getPool && options?.cache)) {
+						return;
+					}
+
+					try {
+						const code = body.code as string;
+						const clientId = body.client_id as string;
+						const pool = options.getPool();
+
+						// Get the consent_code from the authorization record
+						const authResult = await pool.query(
+							"SELECT consent_code, user_id FROM oauth_authorization WHERE code = $1 LIMIT 1",
+							[code],
+						);
+
+						if (authResult.rows.length === 0) {
+							console.warn(
+								"⚠️ [OAuth Token] No authorization record found for code",
+							);
+							if (pool && typeof pool.end === "function") {
+								await pool.end();
+							}
+							return;
+						}
+
+						const consentCode = authResult.rows[0].consent_code;
+						const userId = authResult.rows[0].user_id;
+
+						// Retrieve selected BAP ID from cache/KV
+						const selectedBapId = await options.cache.get<string>(
+							`consent:${consentCode}:bap_id`,
+						);
+
+						if (!selectedBapId) {
+							console.warn("⚠️ [OAuth Token] No BAP ID selection found in KV");
+							if (pool && typeof pool.end === "function") {
+								await pool.end();
+							}
+							return;
+						}
+
+						// Get OAuth client's owner_bap_id
+						const clients = await ctx.context.adapter.findMany({
+							model: "oauthApplication",
+							where: [{ field: "clientId", value: clientId }],
+						});
+
+						if (clients.length === 0) {
+							console.warn("⚠️ [OAuth Token] OAuth client not found");
+							if (pool && typeof pool.end === "function") {
+								await pool.end();
+							}
+							return;
+						}
+
+						const client = clients[0] as { metadata?: { owner_bap_id?: string } };
+						const oauthClientBapId = client.metadata?.owner_bap_id || clientId;
+
+						// Store the selected BAP ID in oauth_client_identities
+						await pool.query(
+							`INSERT INTO oauth_client_identities (user_id, oauth_client_id, bap_id, updated_at)
+							 VALUES ($1, $2, $3, NOW())
+							 ON CONFLICT (user_id, oauth_client_id)
+							 DO UPDATE SET bap_id = $3, updated_at = NOW()`,
+							[userId, oauthClientBapId, selectedBapId],
+						);
+
+						console.log(
+							`✅ [OAuth Token] Stored identity selection: user=${userId.substring(0, 15)}... client=${oauthClientBapId.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}...`,
+						);
+
+						// Clean up KV entry - use cache.delete if available, otherwise try direct method
+						try {
+							// @ts-ignore - cache might have a delete method
+							if (typeof options.cache.delete === "function") {
+								// @ts-ignore
+								await options.cache.delete(`consent:${consentCode}:bap_id`);
+							}
+						} catch (e) {
+							console.warn("⚠️ Could not delete consent KV entry:", e);
+						}
+
+						if (pool && typeof pool.end === "function") {
+							await pool.end();
+						}
+					} catch (error) {
+						console.error(
+							"❌ [OAuth Token] Error storing identity selection:",
+							error,
+						);
+					}
+				}),
+			},
+		],
 		before: [
 			{
 				matcher: (ctx) => ctx.path === "/oauth2/token",
