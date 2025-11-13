@@ -34,12 +34,17 @@ export interface SigmaPluginOptions {
 	getPool?: () => Pool;
 
 	/**
-	 * Optional cache implementation for BAP ID caching
+	 * Optional cache implementation for BAP ID caching and OAuth consent state
 	 * Should provide get/set/delete methods for key-value storage
+	 * The set method should accept an optional options object for TTL configuration
 	 */
 	cache?: {
 		get: <T = unknown>(key: string) => Promise<T | null>;
-		set: (key: string, value: unknown) => Promise<void>;
+		set: (
+			key: string,
+			value: unknown,
+			options?: { ex?: number },
+		) => Promise<void>;
 		delete?: (key: string) => Promise<void>;
 	};
 
@@ -607,6 +612,74 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 	},
 
 	endpoints: {
+		/**
+		 * Store selected BAP ID for OAuth consent
+		 * This endpoint is called by the consent page before submitting consent
+		 * to associate a specific BAP identity with the OAuth grant
+		 */
+		storeConsentBapId: createAuthEndpoint(
+			"/sigma/store-consent-bap-id",
+			{
+				method: "POST",
+				body: z.object({
+					consentCode: z.string(),
+					bapId: z.string(),
+				}),
+				requireHeaders: true,
+			},
+			async (ctx) => {
+				console.log("🔵 [Store Consent BAP ID] Endpoint called");
+
+				// Verify user is authenticated
+				const session = ctx.context.session;
+				if (!session?.user?.id) {
+					console.warn(
+						"⚠️ [Store Consent BAP ID] No authenticated session found",
+					);
+					throw new APIError("UNAUTHORIZED", {
+						message: "Unauthorized - please sign in first",
+					});
+				}
+
+				console.log(
+					`🔵 [Store Consent BAP ID] User authenticated: ${session.user.id.substring(0, 15)}...`,
+				);
+
+				// Validate options
+				if (!options?.cache) {
+					console.error(
+						"❌ [Store Consent BAP ID] Cache not configured in plugin options",
+					);
+					throw new APIError("INTERNAL_SERVER_ERROR", {
+						message: "Plugin configuration error: cache not available",
+					});
+				}
+
+				const { consentCode, bapId } = ctx.body;
+				console.log(
+					`🔵 [Store Consent BAP ID] consentCode=${consentCode.substring(0, 20)}..., bapId=${bapId.substring(0, 15)}...`,
+				);
+
+				try {
+					// Store in KV with 5 minute TTL (consent flow should complete within this time)
+					const kvKey = `consent:${consentCode}:bap_id`;
+					console.log(`🔵 [Store Consent BAP ID] Storing to key: ${kvKey}`);
+					await options.cache.set(kvKey, bapId, { ex: 300 });
+					console.log("✅ [Store Consent BAP ID] Successfully stored in cache");
+
+					return ctx.json({ success: true });
+				} catch (error) {
+					console.error(
+						"❌ [Store Consent BAP ID] Error storing selection:",
+						error,
+					);
+					throw new APIError("INTERNAL_SERVER_ERROR", {
+						message: "Failed to store identity selection",
+					});
+				}
+			},
+		),
+
 		signInSigma: createAuthEndpoint(
 			"/sign-in/sigma",
 			{
