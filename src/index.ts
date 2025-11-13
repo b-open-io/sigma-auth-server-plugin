@@ -1,4 +1,5 @@
 import { PublicKey } from "@bsv/sdk";
+import type { Pool } from "@neondatabase/serverless";
 import type { BetterAuthPlugin, User } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
@@ -20,7 +21,7 @@ export interface SigmaPluginOptions {
 	 * @returns BAP ID or null if not found
 	 */
 	resolveBAPId?: (
-		pool: any,
+		pool: Pool,
 		userId: string,
 		pubkey: string,
 		register: boolean,
@@ -30,15 +31,15 @@ export interface SigmaPluginOptions {
 	 * Optional database pool getter
 	 * Returns a database connection pool for BAP ID resolution
 	 */
-	getPool?: () => any;
+	getPool?: () => Pool;
 
 	/**
 	 * Optional cache implementation for BAP ID caching
 	 * Should provide get/set/delete methods for key-value storage
 	 */
 	cache?: {
-		get: <T = any>(key: string) => Promise<T | null>;
-		set: (key: string, value: any) => Promise<void>;
+		get: <T = unknown>(key: string) => Promise<T | null>;
+		set: (key: string, value: unknown) => Promise<void>;
 		delete?: (key: string) => Promise<void>;
 	};
 
@@ -300,9 +301,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						);
 
 						if (!selectedBapId) {
-							console.warn(
-								"⚠️ [OAuth Consent] No BAP ID selection found in KV",
-							);
+							console.warn("⚠️ [OAuth Consent] No BAP ID selection found in KV");
 							if (pool && typeof pool.end === "function") {
 								await pool.end();
 							}
@@ -634,11 +633,16 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 								updatedAt: new Date(),
 							},
 						})) as UserWithPubkey;
-					} catch (error: any) {
+					} catch (error: unknown) {
 						console.error("Error creating user:", error);
 
 						// If duplicate key error, try to find the user again by pubkey
-						if (error.code === "23505") {
+						if (
+							error &&
+							typeof error === "object" &&
+							"code" in error &&
+							error.code === "23505"
+						) {
 							console.log(
 								"User already exists, attempting to find again by pubkey...",
 							);

@@ -5,6 +5,29 @@
 import type { OAuthCodeData, OAuthCodeStorage } from "./types";
 
 /**
+ * Minimal interface for Vercel KV client
+ */
+interface KVClient {
+	get<T = unknown>(key: string): Promise<T | null>;
+	set(key: string, value: string, options?: { ex?: number }): Promise<void>;
+	del(key: string): Promise<void>;
+}
+
+/**
+ * Minimal interface for Redis client (ioredis or redis)
+ */
+interface RedisClient {
+	get(key: string): Promise<string | null>;
+	set(
+		key: string,
+		value: string,
+		mode?: string,
+		duration?: number,
+	): Promise<void>;
+	del(key: string): Promise<number>;
+}
+
+/**
  * In-memory OAuth code storage
  * NOT SUITABLE FOR PRODUCTION - codes don't persist across restarts
  * Use for development/testing only
@@ -58,7 +81,7 @@ export class InMemoryOAuthCodeStorage implements OAuthCodeStorage {
  * Requires @vercel/kv package
  */
 export class VercelKVOAuthCodeStorage implements OAuthCodeStorage {
-	constructor(private kv: any) {}
+	constructor(private kv: KVClient) {}
 
 	async set(
 		code: string,
@@ -71,13 +94,17 @@ export class VercelKVOAuthCodeStorage implements OAuthCodeStorage {
 	}
 
 	async get(code: string): Promise<OAuthCodeData | null> {
-		const stored = await this.kv.get(`oauth:codes:${code}`);
+		const stored = await this.kv.get<string | OAuthCodeData>(
+			`oauth:codes:${code}`,
+		);
 		if (!stored) return null;
 
 		// Delete after retrieval
 		await this.kv.del(`oauth:codes:${code}`);
 
-		return typeof stored === "string" ? JSON.parse(stored) : stored;
+		return typeof stored === "string"
+			? (JSON.parse(stored) as OAuthCodeData)
+			: stored;
 	}
 
 	async delete(code: string): Promise<void> {
@@ -90,7 +117,7 @@ export class VercelKVOAuthCodeStorage implements OAuthCodeStorage {
  * Requires ioredis or redis package
  */
 export class RedisOAuthCodeStorage implements OAuthCodeStorage {
-	constructor(private redis: any) {}
+	constructor(private redis: RedisClient) {}
 
 	async set(
 		code: string,
