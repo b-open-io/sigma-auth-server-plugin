@@ -1,6 +1,6 @@
 {
 	"name": "@sigma-auth/server-plugin",
-	"version": "0.0.10",
+	"version": "0.0.11",
 	"description": "Better Auth server plugin for Bitcoin signature-based authentication with Sigma Identity",
 	"type": "module",
 	"main": "./dist/index.js",

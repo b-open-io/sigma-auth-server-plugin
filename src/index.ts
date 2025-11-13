@@ -291,16 +291,15 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					const body = ctx.body as Record<string, unknown>;
 					const consentCode = body.consent_code as string;
 					const accept = body.accept as boolean;
-					const clientId = body.client_id as string;
 
 					console.log(
-						`🔵 [OAuth Consent Hook] Body: accept=${accept}, consentCode=${consentCode ? `${consentCode.substring(0, 20)}...` : "undefined"}, clientId=${clientId ? `${clientId.substring(0, 20)}...` : "undefined"}`,
+						`🔵 [OAuth Consent Hook] Body: accept=${accept}, consentCode=${consentCode ? `${consentCode.substring(0, 20)}...` : "undefined"}`,
 					);
 
 					// Only store selectedBapId if consent was accepted
-					if (!accept || !consentCode || !clientId) {
+					if (!accept || !consentCode) {
 						console.warn(
-							`⚠️ [OAuth Consent Hook] Skipping - accept=${accept}, consentCode=${!!consentCode}, clientId=${!!clientId}`,
+							`⚠️ [OAuth Consent Hook] Skipping - accept=${accept}, consentCode=${!!consentCode}`,
 						);
 						return;
 					}
@@ -319,6 +318,31 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							}
 							return;
 						}
+
+						// Get the authorization state from Better Auth's KV storage to find clientId
+						const authStateKey = `oauth:consent:${consentCode}`;
+						console.log(
+							`🔵 [OAuth Consent Hook] Looking for auth state in KV: ${authStateKey}`,
+						);
+						const authState = await options.cache.get<{
+							clientId?: string;
+						}>(authStateKey);
+
+						console.log(
+							`🔵 [OAuth Consent Hook] Auth state retrieved: ${JSON.stringify(authState)}`,
+						);
+
+						if (!authState?.clientId) {
+							console.warn(
+								`⚠️ [OAuth Consent Hook] No clientId found in consent state for key: ${authStateKey}`,
+							);
+							if (pool && typeof pool.end === "function") {
+								await pool.end();
+							}
+							return;
+						}
+
+						const clientId = authState.clientId;
 
 						// Retrieve selected BAP ID from cache/KV
 						console.log(
