@@ -283,15 +283,25 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						// Modify the response to use selected BAP ID instead of primary
 						const responseBody = ctx.context.returned;
 						if (responseBody && typeof responseBody === "object") {
+							const selectedName = bapResult.rows[0].name;
 							console.log(
-								`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}...`,
+								`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}... with name: ${selectedName}`,
 							);
 
-							// Return the modified userinfo response directly
+							// Return the modified userinfo response
+							// Override standard OIDC claims (name, given_name) with selected identity data
+							// Add custom BAP claims (bap_id, bap_name)
 							return {
 								...responseBody,
+								// Override standard OIDC claims to match selected identity
+								name: selectedName,
+								given_name: selectedName,
+								// Remove picture to avoid showing wrong identity's picture
+								// TODO: Fetch picture from BAP resolution service
+								picture: undefined,
+								// Add custom BAP claims
 								bap_id: bapResult.rows[0].bap_id,
-								bap_name: bapResult.rows[0].name,
+								bap_name: selectedName,
 							};
 						}
 					} catch (error) {
