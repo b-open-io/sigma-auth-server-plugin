@@ -12,6 +12,15 @@ import { parseAuthToken, verifyAuthToken } from "bitcoin-auth";
 import { z } from "zod";
 
 /**
+ * OAuth client type with Sigma metadata
+ * Note: Better Auth stores metadata as a JSON string, not jsonb
+ */
+interface OAuthClient {
+	clientId: string;
+	metadata?: string; // JSON string from Better Auth
+}
+
+/**
  * Configuration options for the Sigma Auth plugin
  */
 export interface SigmaPluginOptions {
@@ -150,41 +159,38 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						return; // Token exchange failed, skip BAP ID storage
 					}
 
-					// Only proceed if we have the necessary options
-					if (!(options?.getPool && options?.cache)) {
+					// Only proceed if we have cache option
+					if (!options?.cache) {
 						return;
 					}
 
 					try {
-						const pool = options.getPool();
-
 						// Get the access token from response to find the related consent
 						const accessToken = (responseBody as { access_token: string })
 							.access_token;
 
-						// Query the access token record to get userId and clientId
+						// Query the access token record to get userId and clientId using adapter
 						console.log(
 							`🔵 [OAuth Token Hook] Querying for access token: ${accessToken.substring(0, 20)}...`,
 						);
-						const tokenResult = await pool.query<{
+						const tokenRecords = await ctx.context.adapter.findMany<{
 							userId: string;
 							clientId: string;
-						}>(
-							'SELECT "userId", "clientId" FROM "oauthAccessToken" WHERE "accessToken" = $1 LIMIT 1',
-							[accessToken],
-						);
+							accessToken: string;
+						}>({
+							model: "oauthAccessToken",
+							where: [{ field: "accessToken", value: accessToken }],
+							limit: 1,
+						});
 
-						if (tokenResult.rows.length === 0) {
+						if (tokenRecords.length === 0) {
 							console.warn(
 								"⚠️ [OAuth Token Hook] No access token found in database",
 							);
-							if (pool && typeof pool.end === "function") {
-								await pool.end();
-							}
 							return;
 						}
 
-						const { userId, clientId } = tokenResult.rows[0];
+						const { userId, clientId } = tokenRecords[0];
 						console.log(
 							`🔵 [OAuth Token Hook] Found userId: ${userId.substring(0, 15)}..., clientId: ${clientId.substring(0, 15)}...`,
 						);
@@ -193,25 +199,32 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						console.log(
 							`🔵 [OAuth Token Hook] Querying consent record for selectedBapId`,
 						);
-						const consentResult = await pool.query<{ selectedBapId: string }>(
-							'SELECT "selectedBapId" FROM "oauthConsent" WHERE "userId" = $1 AND "clientId" = $2 ORDER BY "createdAt" DESC LIMIT 1',
-							[userId, clientId],
-						);
+						const consentRecords = await ctx.context.adapter.findMany<{
+							selectedBapId: string;
+							userId: string;
+							clientId: string;
+							createdAt: Date;
+						}>({
+							model: "oauthConsent",
+							where: [
+								{ field: "userId", value: userId },
+								{ field: "clientId", value: clientId },
+							],
+							limit: 1,
+							sortBy: { field: "createdAt", direction: "desc" },
+						});
 
 						if (
-							consentResult.rows.length === 0 ||
-							!consentResult.rows[0].selectedBapId
+							consentRecords.length === 0 ||
+							!consentRecords[0].selectedBapId
 						) {
 							console.warn(
 								`⚠️ [OAuth Token Hook] No selectedBapId found in consent record for userId: ${userId.substring(0, 15)}..., clientId: ${clientId.substring(0, 15)}...`,
 							);
-							if (pool && typeof pool.end === "function") {
-								await pool.end();
-							}
 							return;
 						}
 
-						const selectedBapId = consentResult.rows[0].selectedBapId;
+						const selectedBapId = consentRecords[0].selectedBapId;
 						console.log(
 							`🔵 [OAuth Token Hook] Found selectedBapId: ${selectedBapId.substring(0, 15)}...`,
 						);
@@ -228,10 +241,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						console.log(
 							`✅ [OAuth Token Hook] Stored BAP ID in access token: user=${userId.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}...`,
 						);
-
-						if (pool && typeof pool.end === "function") {
-							await pool.end();
-						}
 					} catch (error) {
 						console.error(
 							"❌ [OAuth Token] Error storing identity selection:",
@@ -243,11 +252,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 			{
 				matcher: (ctx) => ctx.path === "/oauth2/userinfo",
 				handler: createAuthMiddleware(async (ctx) => {
-					// Only proceed if we have getPool option
-					if (!options?.getPool) {
-						return;
-					}
-
 					// Get the access token from Authorization header
 					const authHeader = ctx.headers?.get?.("authorization");
 					if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -256,63 +260,106 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 					const accessToken = authHeader.substring(7);
 
-					// Look up the access token record to get selectedBapId
-					const pool = options.getPool();
 					try {
-						const result = await pool.query(
-							'SELECT "selectedBapId", "userId" FROM "oauthAccessToken" WHERE "accessToken" = $1 LIMIT 1',
-							[accessToken],
-						);
+						// Look up the access token record to get selectedBapId using adapter
+						const tokenRecords = await ctx.context.adapter.findMany<{
+							selectedBapId?: string;
+							userId: string;
+							accessToken: string;
+						}>({
+							model: "oauthAccessToken",
+							where: [{ field: "accessToken", value: accessToken }],
+							limit: 1,
+						});
 
-						if (result.rows.length === 0 || !result.rows[0].selectedBapId) {
+						if (tokenRecords.length === 0 || !tokenRecords[0].selectedBapId) {
 							return; // No selected BAP ID, use primary (default behavior)
 						}
 
-						const selectedBapId = result.rows[0].selectedBapId;
+						const selectedBapId = tokenRecords[0].selectedBapId;
 
-						// Get BAP ID details from user_bap_ids table
-						const bapResult = await pool.query(
-							"SELECT bap_id, name FROM user_bap_ids WHERE bap_id = $1 LIMIT 1",
-							[selectedBapId],
-						);
-
-						if (bapResult.rows.length === 0) {
-							return; // Selected BAP ID not found, use primary
+						// Get BAP ID details from user_bap_ids table using getPool if available
+						// This is a custom table that may need raw SQL
+						if (!options?.getPool) {
+							console.warn(
+								"⚠️ [OAuth Userinfo] getPool not available, cannot query user_bap_ids",
+							);
+							return;
 						}
 
-						// Modify the response to use selected BAP ID instead of primary
-						const responseBody = ctx.context.returned;
-						if (responseBody && typeof responseBody === "object") {
-							const selectedName = bapResult.rows[0].name;
-							console.log(
-								`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}... with name: ${selectedName}`,
+						const pool = options.getPool();
+						const client = await pool.connect();
+						try {
+							const bapResult = await client.query(
+								"SELECT bap_id, name, image FROM user_bap_ids WHERE bap_id = $1 LIMIT 1",
+								[selectedBapId],
 							);
 
-							// Return the modified userinfo response
-							// Override standard OIDC claims (name, given_name) with selected identity data
-							// Add custom BAP claims (bap_id, bap_name)
-							return {
-								...responseBody,
-								// Override standard OIDC claims to match selected identity
-								name: selectedName,
-								given_name: selectedName,
-								// Remove picture to avoid showing wrong identity's picture
-								// TODO: Fetch picture from BAP resolution service
-								picture: undefined,
-								// Add custom BAP claims
-								bap_id: bapResult.rows[0].bap_id,
-								bap_name: selectedName,
-							};
+							if (bapResult.rows.length === 0) {
+								return; // Selected BAP ID not found, use primary
+							}
+
+							// Modify the response to use selected BAP ID instead of primary
+							const responseBody = ctx.context.returned as Record<
+								string,
+								unknown
+							>;
+							if (responseBody && typeof responseBody === "object") {
+								const selectedBapId_str = bapResult.rows[0].bap_id;
+								const selectedName = bapResult.rows[0].name;
+								const selectedImage = bapResult.rows[0].image;
+
+								console.log(
+									`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}... with name: ${selectedName}`,
+								);
+
+								// Fetch the member pubkey for this BAP ID from KV reverse index
+								let memberPubkey: string | null = null;
+								if (options.cache) {
+									try {
+										const reverseKey = `bap:member_pubkey:${selectedBapId}`;
+										memberPubkey = await options.cache.get<string>(reverseKey);
+										if (memberPubkey) {
+											console.log(
+												`📝 [OAuth Userinfo] Found member pubkey for BAP ID ${selectedBapId.substring(0, 15)}...: ${memberPubkey.substring(0, 20)}...`,
+											);
+										} else {
+											console.warn(
+												`⚠️ [OAuth Userinfo] No member pubkey found in cache for BAP ID ${selectedBapId.substring(0, 15)}...`,
+											);
+										}
+									} catch (error) {
+										console.error(
+											`❌ [OAuth Userinfo] Error fetching member pubkey for BAP ID ${selectedBapId.substring(0, 15)}...:`,
+											error,
+										);
+									}
+								}
+
+								// Return the modified userinfo response
+								// Override standard OIDC claims with selected identity data from database
+								// Custom BAP claims maintain backward compatibility
+								return {
+									...responseBody,
+									// Standard OIDC claims mapped to selected identity
+									name: selectedName,
+									given_name: selectedName,
+									picture: selectedImage || responseBody.picture || null, // Use per-identity image or fall back to primary
+									// Override pubkey with the member pubkey for this BAP identity (if found)
+									pubkey: memberPubkey || responseBody.pubkey,
+									// Custom BAP claims for backward compatibility
+									bap_id: selectedBapId_str,
+									bap_name: selectedName,
+								};
+							}
+						} finally {
+							client.release();
 						}
 					} catch (error) {
 						console.error(
 							"❌ [OAuth Userinfo] Error retrieving selected BAP ID:",
 							error,
 						);
-					} finally {
-						if (pool && typeof pool.end === "function") {
-							await pool.end();
-						}
 					}
 				}),
 			},
@@ -321,11 +368,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 				handler: createAuthMiddleware(async (ctx) => {
 					console.log("🔵 [OAuth Consent Hook] Consent hook triggered");
 
-					// Only proceed if we have the necessary options
-					if (!(options?.getPool && options?.cache)) {
-						console.warn(
-							"⚠️ [OAuth Consent Hook] Missing getPool or cache options",
-						);
+					// Only proceed if we have cache option
+					if (!options?.cache) {
+						console.warn("⚠️ [OAuth Consent Hook] Missing cache option");
 						return;
 					}
 
@@ -346,43 +391,42 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					}
 
 					try {
-						const pool = options.getPool();
-
 						// Get session for userId
 						const session = ctx.context.session;
 						if (!session?.user?.id) {
 							console.warn(
 								"⚠️ [OAuth Consent Hook] No session found to link consent",
 							);
-							if (pool && typeof pool.end === "function") {
-								await pool.end();
-							}
 							return;
 						}
 
 						// Wait a bit for Better Auth to create the consent record
 						await new Promise((resolve) => setTimeout(resolve, 100));
 
-						// Query the database to get the clientId from the consent record that was just created
+						// Query the database to get the clientId from the consent record using adapter
 						console.log(
 							`🔵 [OAuth Consent Hook] Querying database for clientId using userId: ${session.user.id.substring(0, 15)}...`,
 						);
-						const consentResult = await pool.query<{ clientId: string }>(
-							'SELECT "clientId" FROM "oauthConsent" WHERE "userId" = $1 ORDER BY "createdAt" DESC LIMIT 1',
-							[session.user.id],
-						);
+						const consentRecords = await ctx.context.adapter.findMany<{
+							id: string;
+							clientId: string;
+							userId: string;
+							createdAt: Date;
+						}>({
+							model: "oauthConsent",
+							where: [{ field: "userId", value: session.user.id }],
+							limit: 1,
+							sortBy: { field: "createdAt", direction: "desc" },
+						});
 
-						if (consentResult.rows.length === 0) {
+						if (consentRecords.length === 0) {
 							console.warn(
 								`⚠️ [OAuth Consent Hook] No consent record found for userId: ${session.user.id.substring(0, 15)}...`,
 							);
-							if (pool && typeof pool.end === "function") {
-								await pool.end();
-							}
 							return;
 						}
 
-						const clientId = consentResult.rows[0].clientId;
+						const { id: consentId, clientId } = consentRecords[0];
 						console.log(
 							`🔵 [OAuth Consent Hook] Found clientId from database: ${clientId.substring(0, 15)}...`,
 						);
@@ -403,9 +447,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							console.warn(
 								`⚠️ [OAuth Consent Hook] No BAP ID selection found in KV for consent code: ${consentCode}`,
 							);
-							if (pool && typeof pool.end === "function") {
-								await pool.end();
-							}
 							return;
 						}
 
@@ -413,23 +454,18 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							`🔵 [OAuth Consent Hook] Updating consent record: userId=${session.user.id.substring(0, 15)}..., clientId=${clientId.substring(0, 15)}..., bapId=${selectedBapId.substring(0, 15)}...`,
 						);
 
-						// Update the consent record with selectedBapId
-						const result = await pool.query(
-							`UPDATE "oauthConsent" SET "selectedBapId" = $1 WHERE id = (SELECT id FROM "oauthConsent" WHERE "userId" = $2 AND "clientId" = $3 ORDER BY "createdAt" DESC LIMIT 1)`,
-							[selectedBapId, session.user.id, clientId],
-						);
-
-						console.log(
-							`🔵 [OAuth Consent Hook] UPDATE query result: rowCount=${result.rowCount}`,
-						);
+						// Update the consent record with selectedBapId using adapter
+						await ctx.context.adapter.update({
+							model: "oauthConsent",
+							where: [{ field: "id", value: consentId }],
+							update: {
+								selectedBapId,
+							},
+						});
 
 						console.log(
 							`✅ [OAuth Consent Hook] Stored BAP ID in consent: user=${session.user.id.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}... client=${clientId.substring(0, 15)}...`,
 						);
-
-						if (pool && typeof pool.end === "function") {
-							await pool.end();
-						}
 					} catch (error) {
 						console.error(
 							"❌ [OAuth Consent Hook] Error storing identity selection:",
@@ -455,6 +491,29 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						console.log(
 							"🟢 [Sigma Plugin] Processing authorization_code grant",
 						);
+
+						// Get client_id from request body
+						const clientId = body.client_id as string;
+						if (!clientId) {
+							throw new APIError("BAD_REQUEST", {
+								message: "Missing client_id in request body",
+							});
+						}
+
+						// Lookup OAuth client by client_id
+						const clients = await ctx.context.adapter.findMany({
+							model: "oauthApplication",
+							where: [{ field: "clientId", value: clientId }],
+						});
+
+						if (clients.length === 0) {
+							throw new APIError("UNAUTHORIZED", {
+								message: `OAuth client not registered: ${clientId}`,
+							});
+						}
+
+						const client = clients[0] as OAuthClient;
+
 						// Validate client authentication via Bitcoin signature
 						const headers = new Headers(ctx.headers || {});
 						const authToken = headers.get("x-auth-token");
@@ -471,6 +530,38 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						if (!parsed?.pubkey) {
 							throw new APIError("UNAUTHORIZED", {
 								message: "Invalid Bitcoin auth token format",
+							});
+						}
+
+						// Verify the pubkey from signature matches the client's memberPubkey
+						// Better Auth stores metadata as JSON string
+						if (!client.metadata) {
+							throw new APIError("UNAUTHORIZED", {
+								message: `Client ${clientId} has no metadata`,
+							});
+						}
+
+						const metadata = JSON.parse(client.metadata) as {
+							memberPubkey?: string;
+						};
+						const expectedPubkey = metadata.memberPubkey;
+
+						if (!expectedPubkey) {
+							console.error(
+								`❌ [OAuth Token] Client ${clientId} metadata missing memberPubkey:`,
+								metadata,
+							);
+							throw new APIError("UNAUTHORIZED", {
+								message: `Client ${clientId} has no memberPubkey in metadata`,
+							});
+						}
+
+						if (parsed.pubkey !== expectedPubkey) {
+							console.error(
+								`❌ [OAuth Token] Pubkey mismatch - signature: ${parsed.pubkey.substring(0, 20)}..., expected: ${expectedPubkey.substring(0, 20)}...`,
+							);
+							throw new APIError("UNAUTHORIZED", {
+								message: "Bitcoin signature pubkey does not match client",
 							});
 						}
 
@@ -495,24 +586,8 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							});
 						}
 
-						// Use pubkey as client_id, but verify client exists first
-						const clientId = parsed.pubkey;
-
-						// Verify this client is registered
-						const clients = await ctx.context.adapter.findMany({
-							model: "oauthApplication",
-							where: [{ field: "clientId", value: clientId }],
-						});
-
-						if (clients.length === 0) {
-							throw new APIError("UNAUTHORIZED", {
-								message:
-									"OAuth client not registered. Register the client first.",
-							});
-						}
-
 						console.log(
-							`✅ [OAuth Token] Client authenticated via Bitcoin signature (clientId: ${clientId.substring(0, 20)}...)`,
+							`✅ [OAuth Token] Client authenticated via Bitcoin signature (clientId: ${clientId}, memberPubkey: ${parsed.pubkey.substring(0, 20)}...)`,
 						);
 
 						// Inject client_id into request body for Better Auth to process
@@ -544,6 +619,28 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							});
 						}
 
+						// Get client_id from request body
+						const clientId = body.client_id as string;
+						if (!clientId) {
+							throw new APIError("BAD_REQUEST", {
+								message: "Missing client_id in request body",
+							});
+						}
+
+						// Lookup OAuth client by client_id
+						const clients = await ctx.context.adapter.findMany({
+							model: "oauthApplication",
+							where: [{ field: "clientId", value: clientId }],
+						});
+
+						if (clients.length === 0) {
+							throw new APIError("UNAUTHORIZED", {
+								message: `OAuth client not registered: ${clientId}`,
+							});
+						}
+
+						const client = clients[0] as OAuthClient;
+
 						// Validate client signature first
 						const headers = new Headers(ctx.headers || {});
 						const authToken = headers.get("x-auth-token");
@@ -559,6 +656,38 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						if (!parsed?.pubkey) {
 							throw new APIError("UNAUTHORIZED", {
 								message: "Invalid Bitcoin auth token format",
+							});
+						}
+
+						// Verify the pubkey from signature matches the client's memberPubkey
+						// Better Auth stores metadata as JSON string
+						if (!client.metadata) {
+							throw new APIError("UNAUTHORIZED", {
+								message: `Client ${clientId} has no metadata`,
+							});
+						}
+
+						const metadata = JSON.parse(client.metadata) as {
+							memberPubkey?: string;
+						};
+						const expectedPubkey = metadata.memberPubkey;
+
+						if (!expectedPubkey) {
+							console.error(
+								`❌ [OAuth Token Refresh] Client ${clientId} metadata missing memberPubkey:`,
+								metadata,
+							);
+							throw new APIError("UNAUTHORIZED", {
+								message: `Client ${clientId} has no memberPubkey in metadata`,
+							});
+						}
+
+						if (parsed.pubkey !== expectedPubkey) {
+							console.error(
+								`❌ [OAuth Token Refresh] Pubkey mismatch - signature: ${parsed.pubkey.substring(0, 20)}..., expected: ${expectedPubkey.substring(0, 20)}...`,
+							);
+							throw new APIError("UNAUTHORIZED", {
+								message: "Bitcoin signature pubkey does not match client",
 							});
 						}
 
@@ -581,24 +710,8 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							});
 						}
 
-						// Use pubkey as client_id, but verify client exists first
-						const clientId = parsed.pubkey;
-
-						// Verify this client is registered
-						const clients = await ctx.context.adapter.findMany({
-							model: "oauthApplication",
-							where: [{ field: "clientId", value: clientId }],
-						});
-
-						if (clients.length === 0) {
-							throw new APIError("UNAUTHORIZED", {
-								message:
-									"OAuth client not registered. Register the client first.",
-							});
-						}
-
 						console.log(
-							`✅ [OAuth Token Refresh] Client authenticated via Bitcoin signature (clientId: ${clientId.substring(0, 20)}...)`,
+							`✅ [OAuth Token Refresh] Client authenticated via Bitcoin signature (clientId: ${clientId}, memberPubkey: ${parsed.pubkey.substring(0, 20)}...)`,
 						);
 
 						// Inject client_id into request body for Better Auth to process
@@ -823,11 +936,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 					// CRITICAL: Always call resolveBAPId - it has its own caching
 					// Bypassing with cachedBapId causes issues if registration is needed
 					const bapId = await options.resolveBAPId(pool, user.id, pubkey, true);
-
-					// Close pool if it has an end method
-					if (pool && typeof pool.end === "function") {
-						await pool.end();
-					}
 
 					if (bapId) {
 						console.log(
