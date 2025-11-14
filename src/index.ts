@@ -278,11 +278,11 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 						const selectedBapId = tokenRecords[0].selectedBapId;
 
-						// Get BAP ID details from user_bap_ids table using getPool if available
+						// Get BAP ID details from profile table using getPool if available
 						// This is a custom table that may need raw SQL
 						if (!options?.getPool) {
 							console.warn(
-								"⚠️ [OAuth Userinfo] getPool not available, cannot query user_bap_ids",
+								"⚠️ [OAuth Userinfo] getPool not available, cannot query profile",
 							);
 							return;
 						}
@@ -291,7 +291,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						const client = await pool.connect();
 						try {
 							const bapResult = await client.query(
-								"SELECT bap_id, name, image FROM user_bap_ids WHERE bap_id = $1 LIMIT 1",
+								"SELECT bap_id, name, image FROM profile WHERE bap_id = $1 LIMIT 1",
 								[selectedBapId],
 							);
 
