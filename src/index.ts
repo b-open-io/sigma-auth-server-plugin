@@ -1015,6 +1015,7 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 									bap_id: string;
 									name: string;
 									image: string | null;
+									member_pubkey: string | null;
 								}>;
 							};
 
@@ -1028,8 +1029,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 									bap_id: string;
 									name: string;
 									image: string | null;
+									member_pubkey: string | null;
 								}>(
-									"SELECT bap_id, name, image FROM profile WHERE bap_id = $1 AND user_id = $2 LIMIT 1",
+									"SELECT bap_id, name, image, member_pubkey FROM profile WHERE bap_id = $1 AND user_id = $2 LIMIT 1",
 									[selectedBapId, user.id],
 								);
 							} else {
@@ -1042,8 +1044,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 									bap_id: string;
 									name: string;
 									image: string | null;
+									member_pubkey: string | null;
 								}>(
-									"SELECT bap_id, name, image FROM profile WHERE user_id = $1 AND is_primary = true LIMIT 1",
+									"SELECT bap_id, name, image, member_pubkey FROM profile WHERE user_id = $1 AND is_primary = true LIMIT 1",
 									[user.id],
 								);
 							}
@@ -1061,12 +1064,15 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 									update: {
 										name: selectedProfile.name,
 										image: selectedProfile.image,
+										...(selectedProfile.member_pubkey && {
+											pubkey: selectedProfile.member_pubkey,
+										}),
 										updatedAt: new Date(),
 									},
 								});
 
 								console.log(
-									`✅ [SIGN-IN] Updated user record with profile data: name=${selectedProfile.name}, image=${selectedProfile.image ? "set" : "null"}`,
+									`✅ [SIGN-IN] Updated user record with profile data: name=${selectedProfile.name}, image=${selectedProfile.image ? "set" : "null"}, pubkey=${selectedProfile.member_pubkey ? selectedProfile.member_pubkey.substring(0, 20) + "..." : "null"}`,
 								);
 							} else {
 								console.warn(
