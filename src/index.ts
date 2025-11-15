@@ -1005,17 +1005,26 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							`✅ BAP ID resolved and registered: ${bapId.substring(0, 20)}...`,
 						);
 
-						// If user selected a specific identity, update user record with that profile data
+						// Update user record with profile data from profile table
+						// Use selected identity if provided, otherwise use primary
 						const selectedBapId = ctx.body?.bapId;
-						if (selectedBapId) {
-							console.log(
-								`🎯 [SIGN-IN] User selected specific identity: ${selectedBapId.substring(0, 15)}...`,
-							);
+						const client = await pool.connect();
+						try {
+							let profileResult: {
+								rows: Array<{
+									bap_id: string;
+									name: string;
+									image: string | null;
+								}>;
+							};
 
-							// Query profile for selected identity
-							const client = await pool.connect();
-							try {
-								const profileResult = await client.query<{
+							if (selectedBapId) {
+								console.log(
+									`🎯 [SIGN-IN] User selected specific identity: ${selectedBapId.substring(0, 15)}...`,
+								);
+
+								// Query profile for selected identity
+								profileResult = await client.query<{
 									bap_id: string;
 									name: string;
 									image: string | null;
@@ -1023,35 +1032,51 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 									"SELECT bap_id, name, image FROM profile WHERE bap_id = $1 AND user_id = $2 LIMIT 1",
 									[selectedBapId, user.id],
 								);
+							} else {
+								console.log(
+									`🎯 [SIGN-IN] No specific identity selected, loading primary profile`,
+								);
 
-								if (profileResult.rows.length > 0) {
-									const selectedProfile = profileResult.rows[0];
-									console.log(
-										`✅ [SIGN-IN] Found profile for selected identity: ${selectedProfile.name}`,
-									);
-
-									// Update user record with selected profile data
-									await ctx.context.adapter.update({
-										model: "user",
-										where: [{ field: "id", value: user.id }],
-										update: {
-											name: selectedProfile.name,
-											image: selectedProfile.image,
-											updatedAt: new Date(),
-										},
-									});
-
-									console.log(
-										`✅ [SIGN-IN] Updated user record with selected profile data`,
-									);
-								} else {
-									console.warn(
-										`⚠️ [SIGN-IN] Selected BAP ID not found in user's profiles: ${selectedBapId.substring(0, 15)}...`,
-									);
-								}
-							} finally {
-								client.release();
+								// Query for primary profile
+								profileResult = await client.query<{
+									bap_id: string;
+									name: string;
+									image: string | null;
+								}>(
+									"SELECT bap_id, name, image FROM profile WHERE user_id = $1 AND is_primary = true LIMIT 1",
+									[user.id],
+								);
 							}
+
+							if (profileResult.rows.length > 0) {
+								const selectedProfile = profileResult.rows[0];
+								console.log(
+									`✅ [SIGN-IN] Found profile: ${selectedProfile.name} (${selectedProfile.bap_id.substring(0, 15)}...)`,
+								);
+
+								// Update user record with profile data
+								await ctx.context.adapter.update({
+									model: "user",
+									where: [{ field: "id", value: user.id }],
+									update: {
+										name: selectedProfile.name,
+										image: selectedProfile.image,
+										updatedAt: new Date(),
+									},
+								});
+
+								console.log(
+									`✅ [SIGN-IN] Updated user record with profile data: name=${selectedProfile.name}, image=${selectedProfile.image ? "set" : "null"}`,
+								);
+							} else {
+								console.warn(
+									selectedBapId
+										? `⚠️ [SIGN-IN] Selected BAP ID not found in user's profiles: ${selectedBapId.substring(0, 15)}...`
+										: `⚠️ [SIGN-IN] No primary profile found for user ${user.id.substring(0, 15)}...`,
+								);
+							}
+						} finally {
+							client.release();
 						}
 
 						// Re-fetch user to get updated profile data
