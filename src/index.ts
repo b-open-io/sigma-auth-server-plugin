@@ -241,6 +241,56 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						console.log(
 							`✅ [OAuth Token Hook] Stored BAP ID in access token: user=${userId.substring(0, 15)}... bap=${selectedBapId.substring(0, 15)}...`,
 						);
+
+						// Update user record with selected identity's profile data
+						// This ensures get-session returns the correct profile data
+						if (options?.getPool) {
+							const pool = options.getPool();
+							const client = await pool.connect();
+							try {
+								// Query profile table for selected identity
+								const profileResult = await client.query<{
+									bap_id: string;
+									name: string;
+									image: string | null;
+									member_pubkey: string | null;
+								}>(
+									"SELECT bap_id, name, image, member_pubkey FROM profile WHERE bap_id = $1 AND user_id = $2 LIMIT 1",
+									[selectedBapId, userId],
+								);
+
+								if (profileResult.rows.length > 0) {
+									const profile = profileResult.rows[0];
+									console.log(
+										`🔵 [OAuth Token Hook] Found profile for selected identity: ${profile.name}`,
+									);
+
+									// Update user record with profile data
+									await ctx.context.adapter.update({
+										model: "user",
+										where: [{ field: "id", value: userId }],
+										update: {
+											name: profile.name,
+											image: profile.image,
+											...(profile.member_pubkey && {
+												pubkey: profile.member_pubkey,
+											}),
+											updatedAt: new Date(),
+										},
+									});
+
+									console.log(
+										`✅ [OAuth Token Hook] Updated user record with profile data: name=${profile.name}, image=${profile.image ? "set" : "null"}, pubkey=${profile.member_pubkey ? `${profile.member_pubkey.substring(0, 20)}...` : "null"}`,
+									);
+								} else {
+									console.warn(
+										`⚠️ [OAuth Token Hook] No profile found for selectedBapId: ${selectedBapId}`,
+									);
+								}
+							} finally {
+								client.release();
+							}
+						}
 					} catch (error) {
 						console.error(
 							"❌ [OAuth Token] Error storing identity selection:",
