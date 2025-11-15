@@ -971,6 +971,40 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 
 				let user = users[0] as UserWithPubkey | undefined;
 
+				// If not found by user.pubkey, check profile table for member_pubkey
+				// This handles multi-identity: user.pubkey = last selected identity's pubkey
+				// but profile.member_pubkey contains ALL identity pubkeys
+				if (!user && options?.getPool) {
+					console.log(
+						"User not found by user.pubkey, checking profile.member_pubkey...",
+					);
+					const pool = options.getPool();
+					const client = await pool.connect();
+					try {
+						const profileResult = await client.query<{ user_id: string }>(
+							"SELECT user_id FROM profile WHERE member_pubkey = $1 LIMIT 1",
+							[pubkey],
+						);
+
+						if (profileResult.rows.length > 0) {
+							const userId = profileResult.rows[0].user_id;
+							console.log(
+								`Found user via profile.member_pubkey: ${userId.substring(0, 15)}...`,
+							);
+
+							// Fetch the user record
+							const foundUsers =
+								await ctx.context.adapter.findMany<UserWithPubkey>({
+									model: "user",
+									where: [{ field: "id", value: userId }],
+								});
+							user = foundUsers[0] as UserWithPubkey | undefined;
+						}
+					} finally {
+						client.release();
+					}
+				}
+
 				if (!user) {
 					// Create new user with pubkey (no email)
 					console.log("Creating new user with pubkey:", pubkey);
