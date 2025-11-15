@@ -296,7 +296,12 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 							);
 
 							if (bapResult.rows.length === 0) {
-								return; // Selected BAP ID not found, use primary
+								console.error(
+									`❌ [OAuth Userinfo] Selected BAP ID not found in database: ${selectedBapId.substring(0, 15)}...`,
+								);
+								throw new Error(
+									`Selected identity not found: ${selectedBapId}`,
+								);
 							}
 
 							let selectedBapId_str = bapResult.rows[0].bap_id;
