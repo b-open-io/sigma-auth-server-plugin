@@ -339,7 +339,11 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 													image = COALESCE($2, image),
 													updated_at = NOW()
 												WHERE bap_id = $3`,
-												[JSON.stringify(profileData), profileData.identity?.image || null, selectedBapId],
+												[
+													JSON.stringify(profileData),
+													profileData.identity?.image || null,
+													selectedBapId,
+												],
 											);
 
 											if (profileData.identity?.image) {
