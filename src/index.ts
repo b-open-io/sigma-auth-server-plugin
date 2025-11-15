@@ -304,8 +304,8 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 								);
 							}
 
-							let selectedBapId_str = bapResult.rows[0].bap_id;
-							let selectedName = bapResult.rows[0].name;
+							const selectedBapId_str = bapResult.rows[0].bap_id;
+							const selectedName = bapResult.rows[0].name;
 							let selectedImage = bapResult.rows[0].image;
 							let profileData = bapResult.rows[0].profile;
 
@@ -326,7 +326,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 									);
 
 									if (profileResponse.ok) {
-										const apiData = await profileResponse.json();
+										const apiData = (await profileResponse.json()) as {
+											result?: typeof profileData;
+										};
 										if (apiData.result) {
 											profileData = apiData.result;
 											const identity = profileData.identity;
@@ -364,7 +366,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 								unknown
 							>;
 							if (responseBody && typeof responseBody === "object") {
-
 								console.log(
 									`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}... with name: ${selectedName}`,
 								);
@@ -858,7 +859,11 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 			"/sign-in/sigma",
 			{
 				method: "POST",
-				body: z.optional(z.object({})),
+				body: z.optional(
+					z.object({
+						bapId: z.string().optional(),
+					}),
+				),
 			},
 			async (ctx) => {
 				// Get auth token from header
@@ -997,6 +1002,55 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						console.log(
 							`✅ BAP ID resolved and registered: ${bapId.substring(0, 20)}...`,
 						);
+
+						// If user selected a specific identity, update user record with that profile data
+						const selectedBapId = ctx.body?.bapId;
+						if (selectedBapId) {
+							console.log(
+								`🎯 [SIGN-IN] User selected specific identity: ${selectedBapId.substring(0, 15)}...`,
+							);
+
+							// Query profile for selected identity
+							const client = await pool.connect();
+							try {
+								const profileResult = await client.query<{
+									bap_id: string;
+									name: string;
+									image: string | null;
+								}>(
+									"SELECT bap_id, name, image FROM profile WHERE bap_id = $1 AND user_id = $2 LIMIT 1",
+									[selectedBapId, user.id],
+								);
+
+								if (profileResult.rows.length > 0) {
+									const selectedProfile = profileResult.rows[0];
+									console.log(
+										`✅ [SIGN-IN] Found profile for selected identity: ${selectedProfile.name}`,
+									);
+
+									// Update user record with selected profile data
+									await ctx.context.adapter.update({
+										model: "user",
+										where: [{ field: "id", value: user.id }],
+										update: {
+											name: selectedProfile.name,
+											image: selectedProfile.image,
+											updatedAt: new Date(),
+										},
+									});
+
+									console.log(
+										`✅ [SIGN-IN] Updated user record with selected profile data`,
+									);
+								} else {
+									console.warn(
+										`⚠️ [SIGN-IN] Selected BAP ID not found in user's profiles: ${selectedBapId.substring(0, 15)}...`,
+									);
+								}
+							} finally {
+								client.release();
+							}
+						}
 
 						// Re-fetch user to get updated profile data
 						const updatedUsers =
