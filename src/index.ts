@@ -291,12 +291,66 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 						const client = await pool.connect();
 						try {
 							const bapResult = await client.query(
-								"SELECT bap_id, name, image FROM profile WHERE bap_id = $1 LIMIT 1",
+								"SELECT bap_id, name, image, profile FROM profile WHERE bap_id = $1 LIMIT 1",
 								[selectedBapId],
 							);
 
 							if (bapResult.rows.length === 0) {
 								return; // Selected BAP ID not found, use primary
+							}
+
+							let selectedBapId_str = bapResult.rows[0].bap_id;
+							let selectedName = bapResult.rows[0].name;
+							let selectedImage = bapResult.rows[0].image;
+							let profileData = bapResult.rows[0].profile;
+
+							// If profile JSONB is NULL, fetch from blockchain and populate it
+							if (!profileData) {
+								console.log(
+									`⚠️ [OAuth Userinfo] Profile JSONB NULL for ${selectedBapId.substring(0, 15)}..., fetching from blockchain`,
+								);
+
+								try {
+									const profileResponse = await fetch(
+										"https://api.sigmaidentity.com/api/v1/identity/get",
+										{
+											method: "POST",
+											headers: { "Content-Type": "application/json" },
+											body: JSON.stringify({ idKey: selectedBapId }),
+										},
+									);
+
+									if (profileResponse.ok) {
+										const apiData = await profileResponse.json();
+										if (apiData.result) {
+											profileData = apiData.result;
+											const identity = profileData.identity;
+											const imageUrl = identity?.image
+												? `https://b.map.sv/${identity.image}`
+												: null;
+
+											// Update database with complete profile JSONB
+											await client.query(
+												`UPDATE profile SET
+													profile = $1,
+													image = COALESCE($2, image),
+													updated_at = NOW()
+												WHERE bap_id = $3`,
+												[JSON.stringify(profileData), imageUrl, selectedBapId],
+											);
+
+											selectedImage = imageUrl || selectedImage;
+											console.log(
+												`✅ [OAuth Userinfo] Populated profile JSONB for ${selectedBapId.substring(0, 15)}...`,
+											);
+										}
+									}
+								} catch (fetchError) {
+									console.error(
+										`❌ [OAuth Userinfo] Failed to fetch profile for ${selectedBapId.substring(0, 15)}...:`,
+										fetchError,
+									);
+								}
 							}
 
 							// Modify the response to use selected BAP ID instead of primary
@@ -305,9 +359,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 								unknown
 							>;
 							if (responseBody && typeof responseBody === "object") {
-								const selectedBapId_str = bapResult.rows[0].bap_id;
-								const selectedName = bapResult.rows[0].name;
-								const selectedImage = bapResult.rows[0].image;
 
 								console.log(
 									`✅ [OAuth Userinfo] Returning selected BAP ID: ${selectedBapId.substring(0, 15)}... with name: ${selectedName}`,
