@@ -342,7 +342,9 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 												[JSON.stringify(profileData), profileData.identity?.image || null, selectedBapId],
 											);
 
-											selectedImage = profileData.identity?.image || selectedImage;
+											if (profileData.identity?.image) {
+												selectedImage = profileData.identity.image;
+											}
 											console.log(
 												`✅ [OAuth Userinfo] Populated profile JSONB for ${selectedBapId.substring(0, 15)}...`,
 											);
