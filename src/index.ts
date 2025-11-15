@@ -331,10 +331,6 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 										};
 										if (apiData.result) {
 											profileData = apiData.result;
-											const identity = profileData.identity;
-											const imageUrl = identity?.image
-												? `https://b.map.sv/${identity.image}`
-												: null;
 
 											// Update database with complete profile JSONB
 											await client.query(
@@ -343,10 +339,10 @@ export const sigma = (options?: SigmaPluginOptions): BetterAuthPlugin => ({
 													image = COALESCE($2, image),
 													updated_at = NOW()
 												WHERE bap_id = $3`,
-												[JSON.stringify(profileData), imageUrl, selectedBapId],
+												[JSON.stringify(profileData), profileData.identity?.image || null, selectedBapId],
 											);
 
-											selectedImage = imageUrl || selectedImage;
+											selectedImage = profileData.identity?.image || selectedImage;
 											console.log(
 												`✅ [OAuth Userinfo] Populated profile JSONB for ${selectedBapId.substring(0, 15)}...`,
 											);
